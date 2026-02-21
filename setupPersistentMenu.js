@@ -10,13 +10,13 @@ await axios.post(
         locale: "default",
         composer_input_disabled: false,
         call_to_actions: [
-          { type: "postback", title: "Багцын үйлчилгээ", payload: "PACKAGE_SERVICE" },
-          { type: "postback", title: "Хосын багц", payload: "COUPLE_PACKAGE" },
-          { type: "postback", title: "Laundry", payload: "LAUNDRY" }
+          { type: "postback", title: "Камерны мэдээлэл", payload: "CAMERA_INFO" },
+          { type: "postback", title: "Захиалга өгөх", payload: "ORDER" },
+          { type: "postback", title: "Холбоо барих", payload: "CONTACT" }
         ]
       }
     ]
   }
 );
 
-console.log("✅ Persistent menu set");
+console.log("✅ BlackBox persistent menu set");

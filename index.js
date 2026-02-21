@@ -54,7 +54,15 @@ app.post("/webhook", async (req, res) => {
 
         // POSTBACK
         if (event.postback) {
-          const p = event.postback.payload;
+          const p = event.postback.payload; 
+          if (p === "GET_STARTED") {
+            await sendText(
+              senderId,
+              "Сайн байна уу? BlackBox Garage MN 👋\nТа дараах сонголтуудаас сонгоно уу."
+            );
+            await sendMainMenu(senderId);
+            continue; // дараагийн event рүү (эсвэл return res.sendStatus(200) гэж болно)
+          }
 
           if (p === "CAMERA_INFO") await sendCameraMenu(senderId);
 
