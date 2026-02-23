@@ -10,8 +10,17 @@ app.use(express.json());
 const PAGE_TOKEN = process.env.PAGE_ACCESS_TOKEN;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 
-const welcomed = new Map();
+// senderId -> YYYY-MM-DD (ямар өдөр menu явуулсан)
+const welcomedDay = new Map();
 
+function dayKey(d = new Date()) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${dd}`;
+}
+
+// VERIFY
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -23,6 +32,7 @@ app.get("/webhook", (req, res) => {
   return res.sendStatus(403);
 });
 
+// WEBHOOK
 app.post("/webhook", async (req, res) => {
   try {
     const entries = req.body.entry || [];
@@ -34,72 +44,101 @@ app.post("/webhook", async (req, res) => {
         const senderId = event?.sender?.id;
         if (!senderId) continue;
 
-        // TEXT MESSAGE
+        const today = dayKey();
+
+        // =========================
+        // TEXT MESSAGE — ӨДӨРТ 1 УДАА Л MENU (00:00-д reset)
+        // =========================
         if (event.message?.text) {
-          if (!welcomed.has(senderId)) {
+          const lastDay = welcomedDay.get(senderId);
+          const canShow = lastDay !== today;
+
+          if (canShow) {
             await sendText(
               senderId,
               "Сайн байна уу? BlackBox Garage MN 👋\nТа дараах сонголтуудаас сонгоно уу."
             );
-
             await sendMainMenu(senderId);
-
-            const timeoutId = setTimeout(() => {
-              welcomed.delete(senderId);
-            }, 24 * 60 * 60 * 1000);
-
-            welcomed.set(senderId, timeoutId);
+            welcomedDay.set(senderId, today);
+          } else {
+            await sendText(senderId, "Доорх товчнуудаас сонголтоо хийнэ үү ✅");
           }
+          continue;
         }
 
+        // =========================
         // POSTBACK
+        // =========================
         if (event.postback) {
-          const p = event.postback.payload; 
+          const p = event.postback.payload;
+
+          // Get Started — мөн өдөрт 1 удаа л welcome+menu
           if (p === "GET_STARTED") {
-            await sendText(
-              senderId,
-              "Сайн байна уу? BlackBox Garage MN 👋\nТа дараах сонголтуудаас сонгоно уу."
-            );
-            await sendMainMenu(senderId);
-            continue; // дараагийн event рүү (эсвэл return res.sendStatus(200) гэж болно)
+            const lastDay = welcomedDay.get(senderId);
+            const canShow = lastDay !== today;
+
+            if (canShow) {
+              await sendText(
+                senderId,
+                "Сайн байна уу? BlackBox Garage MN 👋\nТа дараах сонголтуудаас сонгоно уу."
+              );
+              await sendMainMenu(senderId);
+              welcomedDay.set(senderId, today);
+            } else {
+              await sendText(senderId, "Доорх товчнуудаас сонголтоо хийнэ үү ✅");
+            }
+            continue;
           }
 
-          if (p === "CAMERA_INFO") await sendCameraMenu(senderId);
+          if (p === "CAMERA_INFO") {
+            await sendCameraMenu(senderId);
+            continue;
+          }
 
           if (p === "MODEL_A") {
             await sendText(senderId, modelAText);
             await orderButton(senderId);
+            continue;
           }
 
           if (p === "MODEL_B") {
             await sendText(senderId, modelBText);
             await orderButton(senderId);
+            continue;
           }
 
           if (p === "MODEL_C") {
             await sendText(senderId, modelCText);
             await orderButton(senderId);
+            continue;
           }
 
           if (p === "ORDER") {
             await sendText(senderId, orderText);
+            continue;
           }
 
           if (p === "CONTACT") {
             await sendText(senderId, "📞 Холбоо барих: 8807-6051");
+            continue;
           }
+
+          await sendText(senderId, "Танигдсангүй. Доорх товчнуудаас сонгоно уу ✅");
+          continue;
         }
       }
     }
 
     return res.sendStatus(200);
   } catch (err) {
-    console.error(err);
+    console.error("Webhook error:", err?.response?.data || err?.message);
     return res.sendStatus(200);
   }
 });
 
+// =========================
 // SEND FUNCTIONS
+// =========================
 async function callSendAPI(payload) {
   try {
     await axios.post(
@@ -107,15 +146,12 @@ async function callSendAPI(payload) {
       payload
     );
   } catch (err) {
-    console.error(err.response?.data || err.message);
+    console.error("SendAPI error:", err?.response?.data || err?.message);
   }
 }
 
 async function sendText(id, text) {
-  return callSendAPI({
-    recipient: { id },
-    message: { text },
-  });
+  return callSendAPI({ recipient: { id }, message: { text } });
 }
 
 async function sendMainMenu(id) {
@@ -130,7 +166,7 @@ async function sendMainMenu(id) {
           buttons: [
             { type: "postback", title: "Камерны мэдээлэл", payload: "CAMERA_INFO" },
             { type: "postback", title: "Захиалга өгөх", payload: "ORDER" },
-            { type: "postback", title: "Холбоо барих", payload: "CONTACT" }
+            { type: "postback", title: "Холбоо барих", payload: "CONTACT" },
           ],
         },
       },
@@ -150,7 +186,7 @@ async function sendCameraMenu(id) {
           buttons: [
             { type: "postback", title: "A загвар", payload: "MODEL_A" },
             { type: "postback", title: "B загвар", payload: "MODEL_B" },
-            { type: "postback", title: "C загвар", payload: "MODEL_C" }
+            { type: "postback", title: "C загвар", payload: "MODEL_C" },
           ],
         },
       },
@@ -169,7 +205,7 @@ async function orderButton(id) {
           text: "Захиалга өгөх бол доорх товчийг дарна уу 👇",
           buttons: [
             { type: "postback", title: "🛒 Шууд захиалах", payload: "ORDER" },
-            { type: "postback", title: "📞 Холбоо барих", payload: "CONTACT" }
+            { type: "postback", title: "📞 Холбоо барих", payload: "CONTACT" },
           ],
         },
       },
@@ -177,10 +213,10 @@ async function orderButton(id) {
   });
 }
 
+// =========================
 // TEXTS
-
-const orderText =
-`🚚 Хүргэлт 24 цагийн дотор очно.
+// =========================
+const orderText = `🚚 Хүргэлт 24 цагийн дотор очно.
 
 📦 2 төрлийн залгуур хамт очно:
 1️⃣ Тамхины залгуурт залгах залгуур
@@ -194,8 +230,7 @@ const orderText =
 
 ✅ Захиалга баталгаажсаны дараа хүргэлт хийгдэнэ.`;
 
-const modelAText =
-`📷 A загвар камер
+const modelAText = `📷 A загвар камер
 
 💰 Үнэ: 360,000₮
 
@@ -206,8 +241,7 @@ const modelAText =
 ✔️ OLED дэлгэц
 ✔️ Novatek 96670 процессор`;
 
-const modelBText =
-`📷 B загвар камер
+const modelBText = `📷 B загвар камер
 
 💰 Үнэ: 160,000₮
 
@@ -218,8 +252,7 @@ const modelBText =
 ✔️ 24 цагийн зогсоолын хяналт
 ✔️ WiFi`;
 
-const modelCText =
-`📷 C загвар камер
+const modelCText = `📷 C загвар камер
 
 💰 Үнэ: 100,000₮
 
@@ -229,5 +262,6 @@ const modelCText =
 ✔️ Гар утасны апп
 ✔️ 120° харагдац`;
 
+// START
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("🤖 Bot running on", PORT));
