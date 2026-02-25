@@ -13,11 +13,23 @@ const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 // senderId -> YYYY-MM-DD (ямар өдөр menu явуулсан)
 const welcomedDay = new Map();
 
+// senderId -> { step: "await_phone" | "await_address", model?: "A"|"B"|"C"|null, phone?: string }
+const orderFlow = new Map();
+
 function dayKey(d = new Date()) {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const dd = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${dd}`;
+}
+
+function normalizePhone(text) {
+  // зөвхөн цифр үлдээнэ
+  const digits = (text || "").replace(/\D/g, "");
+  // Монголын нийтлэг 8 оронтой дугаар (эсвэл +976-тэй)
+  if (digits.length === 8) return digits;
+  if (digits.length === 11 && digits.startsWith("976")) return digits.slice(3);
+  return null;
 }
 
 // VERIFY
@@ -47,9 +59,46 @@ app.post("/webhook", async (req, res) => {
         const today = dayKey();
 
         // =========================
-        // TEXT MESSAGE — ӨДӨРТ 1 УДАА Л MENU (00:00-д reset)
+        // TEXT MESSAGE
         // =========================
         if (event.message?.text) {
+          const textRaw = event.message.text.trim();
+
+          // ✅ Хэрвээ хүргэлтийн мэдээлэл асууж байгаа (order flow) үед эхлээд түүнийг боловсруулна
+          const flow = orderFlow.get(senderId);
+          if (flow?.step === "await_phone") {
+            const phone = normalizePhone(textRaw);
+            if (!phone) {
+              await sendText(senderId, "📞 Утасны дугаараа зөв форматтай (8 оронтой) илгээнэ үү. Ж: 88076051");
+              continue;
+            }
+            flow.phone = phone;
+            flow.step = "await_address";
+            orderFlow.set(senderId, flow);
+
+            await sendText(senderId, "📍 Хүргэлтийн хаягаа дэлгэрэнгүй бичнэ үү (дүүрэг/хороо/байр/орц/тоот гэх мэт).");
+            continue;
+          }
+
+          if (flow?.step === "await_address") {
+            const address = textRaw;
+            const model = flow.model || null;
+            const phone = flow.phone || "";
+
+            // захиалга баталгаажуулах мэдээлэл
+            await sendText(
+              senderId,
+              `✅ Хүргэлтийн хүсэлт авлаа!\n\n📦 Загвар: ${model ? model + " загвар" : "Тодорхойгүй (та загвараа сонгоод захиалж болно)"}\n📞 Утас: ${phone}\n📍 Хаяг: ${address}`
+            );
+
+            await sendText(senderId, orderText);
+
+            // flow дуусгана
+            orderFlow.delete(senderId);
+            continue;
+          }
+
+          // ✅ Энгийн үед: ӨДӨРТ 1 УДАА Л menu
           const lastDay = welcomedDay.get(senderId);
           const canShow = lastDay !== today;
 
@@ -63,6 +112,7 @@ app.post("/webhook", async (req, res) => {
           } else {
             await sendText(senderId, "Доорх товчнуудаас сонголтоо хийнэ үү ✅");
           }
+
           continue;
         }
 
@@ -97,24 +147,36 @@ app.post("/webhook", async (req, res) => {
 
           if (p === "MODEL_A") {
             await sendText(senderId, modelAText);
+            // сүүлийн сонгосон загварыг хадгална
+            orderFlow.set(senderId, { step: null, model: "A" });
             await orderButton(senderId);
             continue;
           }
 
           if (p === "MODEL_B") {
             await sendText(senderId, modelBText);
+            orderFlow.set(senderId, { step: null, model: "B" });
             await orderButton(senderId);
             continue;
           }
 
           if (p === "MODEL_C") {
             await sendText(senderId, modelCText);
+            orderFlow.set(senderId, { step: null, model: "C" });
             await orderButton(senderId);
             continue;
           }
 
+          // ✅ ORDER = "Хүргэлтээр авах" — утас/хаяг асуух flow эхлүүлнэ
           if (p === "ORDER") {
-            await sendText(senderId, orderText);
+            const prev = orderFlow.get(senderId);
+            const model = prev?.model || null;
+            orderFlow.set(senderId, { step: "await_phone", model });
+
+            await sendText(
+              senderId,
+              `🚚 Хүргэлтээр авахын тулд холбоо барих дугаараа үлдээнэ үү.\nЖ: 88076051`
+            );
             continue;
           }
 
@@ -165,7 +227,7 @@ async function sendMainMenu(id) {
           text: "Үндсэн цэс 👇",
           buttons: [
             { type: "postback", title: "Камерны мэдээлэл", payload: "CAMERA_INFO" },
-            { type: "postback", title: "Захиалга өгөх", payload: "ORDER" },
+            { type: "postback", title: "🚚 Хүргэлтээр авах", payload: "ORDER" },
             { type: "postback", title: "Холбоо барих", payload: "CONTACT" },
           ],
         },
@@ -202,9 +264,9 @@ async function orderButton(id) {
         type: "template",
         payload: {
           template_type: "button",
-          text: "Захиалга өгөх бол доорх товчийг дарна уу 👇",
+          text: "Хүргэлтээр авах уу?",
           buttons: [
-            { type: "postback", title: "🛒 Шууд захиалах", payload: "ORDER" },
+            { type: "postback", title: "🚚 Хүргэлтээр авах", payload: "ORDER" },
             { type: "postback", title: "📞 Холбоо барих", payload: "CONTACT" },
           ],
         },
@@ -216,7 +278,11 @@ async function orderButton(id) {
 // =========================
 // TEXTS
 // =========================
-const orderText = `🚚 Хүргэлт 24 цагийн дотор очно.
+const giftText = "🎁 64GB Memory card + Memory card уншигч бэлэг";
+
+const orderText = `✅ Захиалга баталгаажсаны дараа хүргэлт хийгдэнэ.
+
+🚚 Хүргэлт 24 цагийн дотор очно.
 
 📦 2 төрлийн залгуур хамт очно:
 1️⃣ Тамхины залгуурт залгах залгуур
@@ -226,13 +292,11 @@ const orderText = `🚚 Хүргэлт 24 цагийн дотор очно.
 
 💰 Хэрэв 2-р хувилбараар хийлгэх бол 30,000₮ дуудлагын хөлс нэмэгдэнэ.
 
-🏦 Данс: Хаан Bank — IBAN: 73000500 5876396044
-
-✅ Захиалга баталгаажсаны дараа хүргэлт хийгдэнэ.`;
+🏦 Данс: Хаан Bank — IBAN: 73000500 5876396044`;
 
 const modelAText = `📷 A загвар камер
-
 💰 Үнэ: 360,000₮
+${giftText}
 
 ✔️ Бүх хэл дээрх програмуудыг дэмждэг
 ✔️ 4K 3840x2160P урд камер
@@ -242,8 +306,8 @@ const modelAText = `📷 A загвар камер
 ✔️ Novatek 96670 процессор`;
 
 const modelBText = `📷 B загвар камер
-
 💰 Үнэ: 160,000₮
+${giftText}
 
 ✔️ Full HD 1080P
 ✔️ Урд + ард камер
@@ -253,8 +317,8 @@ const modelBText = `📷 B загвар камер
 ✔️ WiFi`;
 
 const modelCText = `📷 C загвар камер
-
 💰 Үнэ: 100,000₮
+${giftText}
 
 ✔️ 1080P
 ✔️ G sensor
