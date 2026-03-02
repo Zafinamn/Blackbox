@@ -10,10 +10,13 @@ app.use(express.json());
 const PAGE_TOKEN = process.env.PAGE_ACCESS_TOKEN;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 
-// senderId -> YYYY-MM-DD (ямар өдөр menu явуулсан)
+// senderId -> YYYY-MM-DD (ямар өдөр welcome+menu явуулсан)
 const welcomedDay = new Map();
 
-// senderId -> { step: "await_phone" | "await_address", model?: "A"|"B"|"C"|null, phone?: string }
+// senderId -> YYYY-MM-DD (ямар өдөр "сонголтоо хийнэ үү" сануулга 1 удаа явуулсан)
+const nudgedDay = new Map();
+
+// order flow: senderId -> { step, model, phone }
 const orderFlow = new Map();
 
 function dayKey(d = new Date()) {
@@ -24,9 +27,7 @@ function dayKey(d = new Date()) {
 }
 
 function normalizePhone(text) {
-  // зөвхөн цифр үлдээнэ
   const digits = (text || "").replace(/\D/g, "");
-  // Монголын нийтлэг 8 оронтой дугаар (эсвэл +976-тэй)
   if (digits.length === 8) return digits;
   if (digits.length === 11 && digits.startsWith("976")) return digits.slice(3);
   return null;
@@ -56,65 +57,10 @@ app.post("/webhook", async (req, res) => {
         const senderId = event?.sender?.id;
         if (!senderId) continue;
 
+        // ✅ echo алгасна (давхар спам үүсгэдэг)
+        if (event.message?.is_echo) continue;
+
         const today = dayKey();
-
-        // =========================
-        // TEXT MESSAGE
-        // =========================
-        if (event.message?.text) {
-          const textRaw = event.message.text.trim();
-
-          // ✅ Хэрвээ хүргэлтийн мэдээлэл асууж байгаа (order flow) үед эхлээд түүнийг боловсруулна
-          const flow = orderFlow.get(senderId);
-          if (flow?.step === "await_phone") {
-            const phone = normalizePhone(textRaw);
-            if (!phone) {
-              await sendText(senderId, "📞 Утасны дугаараа зөв форматтай (8 оронтой) илгээнэ үү. Ж: 88076051");
-              continue;
-            }
-            flow.phone = phone;
-            flow.step = "await_address";
-            orderFlow.set(senderId, flow);
-
-            await sendText(senderId, "📍 Хүргэлтийн хаягаа дэлгэрэнгүй бичнэ үү (дүүрэг/хороо/байр/орц/тоот гэх мэт).");
-            continue;
-          }
-
-          if (flow?.step === "await_address") {
-            const address = textRaw;
-            const model = flow.model || null;
-            const phone = flow.phone || "";
-
-            // захиалга баталгаажуулах мэдээлэл
-            await sendText(
-              senderId,
-              `✅ Хүргэлтийн хүсэлт авлаа!\n\n📦 Загвар: ${model ? model + " загвар" : "Тодорхойгүй (та загвараа сонгоод захиалж болно)"}\n📞 Утас: ${phone}\n📍 Хаяг: ${address}`
-            );
-
-            await sendText(senderId, orderText);
-
-            // flow дуусгана
-            orderFlow.delete(senderId);
-            continue;
-          }
-
-          // ✅ Энгийн үед: ӨДӨРТ 1 УДАА Л menu
-          const lastDay = welcomedDay.get(senderId);
-          const canShow = lastDay !== today;
-
-          if (canShow) {
-            await sendText(
-              senderId,
-              "Сайн байна уу? BlackBox Garage MN 👋\nТа дараах сонголтуудаас сонгоно уу."
-            );
-            await sendMainMenu(senderId);
-            welcomedDay.set(senderId, today);
-          } else {
-            await sendText(senderId, "Доорх товчнуудаас сонголтоо хийнэ үү ✅");
-          }
-
-          continue;
-        }
 
         // =========================
         // POSTBACK
@@ -122,21 +68,16 @@ app.post("/webhook", async (req, res) => {
         if (event.postback) {
           const p = event.postback.payload;
 
-          // Get Started — мөн өдөрт 1 удаа л welcome+menu
           if (p === "GET_STARTED") {
-            const lastDay = welcomedDay.get(senderId);
-            const canShow = lastDay !== today;
+            // Get Started дархад шууд menu 1 удаа
+            await sendText(
+              senderId,
+              "Сайн байна уу? BlackBox Garage MN 👋\nТа дараах сонголтуудаас сонгоно уу."
+            );
+            await sendMainMenu(senderId);
 
-            if (canShow) {
-              await sendText(
-                senderId,
-                "Сайн байна уу? BlackBox Garage MN 👋\nТа дараах сонголтуудаас сонгоно уу."
-              );
-              await sendMainMenu(senderId);
-              welcomedDay.set(senderId, today);
-            } else {
-              await sendText(senderId, "Доорх товчнуудаас сонголтоо хийнэ үү ✅");
-            }
+            welcomedDay.set(senderId, today);
+            nudgedDay.delete(senderId); // шинэ өдөрт сануулга дахин 1 удаа боломжтой
             continue;
           }
 
@@ -147,7 +88,6 @@ app.post("/webhook", async (req, res) => {
 
           if (p === "MODEL_A") {
             await sendText(senderId, modelAText);
-            // сүүлийн сонгосон загварыг хадгална
             orderFlow.set(senderId, { step: null, model: "A" });
             await orderButton(senderId);
             continue;
@@ -167,7 +107,6 @@ app.post("/webhook", async (req, res) => {
             continue;
           }
 
-          // ✅ ORDER = "Хүргэлтээр авах" — утас/хаяг асуух flow эхлүүлнэ
           if (p === "ORDER") {
             const prev = orderFlow.get(senderId);
             const model = prev?.model || null;
@@ -175,7 +114,7 @@ app.post("/webhook", async (req, res) => {
 
             await sendText(
               senderId,
-              `🚚 Хүргэлтээр авахын тулд холбоо барих дугаараа үлдээнэ үү.\nЖ: 88076051`
+              "🚚 Хүргэлтээр авахын тулд холбоо барих дугаараа үлдээнэ үү.\nЖ: 88076051"
             );
             continue;
           }
@@ -186,6 +125,75 @@ app.post("/webhook", async (req, res) => {
           }
 
           await sendText(senderId, "Танигдсангүй. Доорх товчнуудаас сонгоно уу ✅");
+          continue;
+        }
+
+        // =========================
+        // TEXT MESSAGE
+        // =========================
+        if (event.message?.text) {
+          const textRaw = event.message.text.trim();
+
+          // 1) Order flow: phone
+          const flow = orderFlow.get(senderId);
+          if (flow?.step === "await_phone") {
+            const phone = normalizePhone(textRaw);
+            if (!phone) {
+              await sendText(senderId, "📞 8 оронтой утасны дугаараа илгээнэ үү. Ж: 88076051");
+              continue;
+            }
+            flow.phone = phone;
+            flow.step = "await_address";
+            orderFlow.set(senderId, flow);
+
+            await sendText(senderId, "📍 Хүргэлтийн хаягаа дэлгэрэнгүй бичнэ үү.");
+            continue;
+          }
+
+          // 2) Order flow: address
+          if (flow?.step === "await_address") {
+            const address = textRaw;
+            const model = flow.model || "Тодорхойгүй";
+            const phone = flow.phone || "";
+
+            await sendText(
+              senderId,
+              `✅ Хүргэлтийн хүсэлт авлаа!\n\n📦 Загвар: ${model} загвар\n📞 Утас: ${phone}\n📍 Хаяг: ${address}`
+            );
+            await sendText(senderId, orderText);
+
+            orderFlow.delete(senderId);
+            continue;
+          }
+
+          // 3) Normal: өдөрт 1 удаа welcome+menu
+          const lastWelcomeDay = welcomedDay.get(senderId);
+          const canShowMenu = lastWelcomeDay !== today;
+
+          if (canShowMenu) {
+            await sendText(
+              senderId,
+              "Сайн байна уу? BlackBox Garage MN 👋\nТа дараах сонголтуудаас сонгоно уу."
+            );
+            await sendMainMenu(senderId);
+
+            welcomedDay.set(senderId, today);
+            nudgedDay.delete(senderId); // өнөөдөр сануулга дахин 1 удаа боломжтой
+            continue;
+          }
+
+          // ✅ Хамгийн чухал: сануулгыг өдөрт 1 л удаа л явуулна
+          const lastNudge = nudgedDay.get(senderId);
+          const canNudge = lastNudge !== today;
+
+          if (canNudge) {
+            await sendText(senderId, "Доорх товчнуудаас сонголтоо хийнэ үү ✅");
+            nudgedDay.set(senderId, today);
+          } else {
+            // өнөөдөр нэг удаа сануулсан бол цаашид чимээгүй (spam биш)
+            // do nothing
+          }
+
           continue;
         }
       }
