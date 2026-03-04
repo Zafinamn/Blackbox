@@ -10,6 +10,11 @@ app.use(express.json());
 const PAGE_TOKEN = process.env.PAGE_ACCESS_TOKEN;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 
+// ===== ImgBB direct links (Carousel images) =====
+const IMG_A = "https://i.ibb.co/mV4pQy6k/C1.png";
+const IMG_B = "https://i.ibb.co/XZ6wjxVt/C2.png";
+const IMG_C = "https://i.ibb.co/jkBwYdxK/C3.png";
+
 // ===== Duplicate хамгаалалт =====
 // message/postback id давхар ирдэг тул 60 сек дотор дахин боловсруулдаггүй
 const processedIds = new Set();
@@ -86,7 +91,6 @@ app.post("/webhook", async (req, res) => {
           const p = event.postback.payload;
 
           if (p === "GET_STARTED") {
-            // Get Started дээр menu 1 удаа
             await sendText(
               senderId,
               "Сайн байна уу? BlackBox Garage MN 👋\nТа дараах сонголтуудаас сонгоно уу."
@@ -98,8 +102,9 @@ app.post("/webhook", async (req, res) => {
             continue;
           }
 
+          // Камерны мэдээлэл -> Carousel зурагтай
           if (p === "CAMERA_INFO") {
-            await sendCameraMenu(senderId);
+            await sendModelCarousel(senderId);
             continue;
           }
 
@@ -158,7 +163,10 @@ app.post("/webhook", async (req, res) => {
           if (flow?.step === "await_phone") {
             const phone = normalizePhone(textRaw);
             if (!phone) {
-              await sendText(senderId, "📞 8 оронтой утасны дугаараа илгээнэ үү. Ж: 88076051");
+              await sendText(
+                senderId,
+                "📞 8 оронтой утасны дугаараа илгээнэ үү. Ж: 88076051"
+              );
               continue;
             }
             flow.phone = phone;
@@ -261,19 +269,43 @@ async function sendMainMenu(id) {
   });
 }
 
-async function sendCameraMenu(id) {
+// Carousel A/B/C
+async function sendModelCarousel(id) {
   return callSendAPI({
     recipient: { id },
     message: {
       attachment: {
         type: "template",
         payload: {
-          template_type: "button",
-          text: "Аль загварын мэдээлэл авах вэ?",
-          buttons: [
-            { type: "postback", title: "A загвар", payload: "MODEL_A" },
-            { type: "postback", title: "B загвар", payload: "MODEL_B" },
-            { type: "postback", title: "C загвар", payload: "MODEL_C" }
+          template_type: "generic",
+          elements: [
+            {
+              title: "A загвар — 360,000₮",
+              image_url: IMG_A,
+              subtitle: "🎁 64GB Memory card + уншигч бэлэг",
+              buttons: [
+                { type: "postback", title: "A дэлгэрэнгүй", payload: "MODEL_A" },
+                { type: "postback", title: "🚚 Хүргэлтээр авах", payload: "ORDER" }
+              ]
+            },
+            {
+              title: "B загвар — 160,000₮",
+              image_url: IMG_B,
+              subtitle: "🎁 64GB Memory card + уншигч бэлэг",
+              buttons: [
+                { type: "postback", title: "B дэлгэрэнгүй", payload: "MODEL_B" },
+                { type: "postback", title: "🚚 Хүргэлтээр авах", payload: "ORDER" }
+              ]
+            },
+            {
+              title: "C загвар — 100,000₮",
+              image_url: IMG_C,
+              subtitle: "🎁 64GB Memory card + уншигч бэлэг",
+              buttons: [
+                { type: "postback", title: "C дэлгэрэнгүй", payload: "MODEL_C" },
+                { type: "postback", title: "🚚 Хүргэлтээр авах", payload: "ORDER" }
+              ]
+            }
           ]
         }
       }
