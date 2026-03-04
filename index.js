@@ -10,14 +10,24 @@ app.use(express.json());
 const PAGE_TOKEN = process.env.PAGE_ACCESS_TOKEN;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 
-// senderId -> YYYY-MM-DD (ямар өдөр welcome+menu явуулсан)
-const welcomedDay = new Map();
+// ===== Duplicate хамгаалалт =====
+// message/postback id давхар ирдэг тул 60 сек дотор дахин боловсруулдаггүй
+const processedIds = new Set();
+function isDuplicateAndMark(event) {
+  const id = event?.message?.mid || event?.postback?.mid;
+  if (!id) return false;
+  if (processedIds.has(id)) return true;
+  processedIds.add(id);
+  setTimeout(() => processedIds.delete(id), 60_000);
+  return false;
+}
 
-// senderId -> YYYY-MM-DD (ямар өдөр "сонголтоо хийнэ үү" сануулга 1 удаа явуулсан)
-const nudgedDay = new Map();
+// ===== Өдөрт 1 удаа menu, өдөрт 1 удаа сануулга =====
+const welcomedDay = new Map(); // senderId -> YYYY-MM-DD
+const nudgedDay = new Map(); // senderId -> YYYY-MM-DD
 
-// order flow: senderId -> { step, model, phone }
-const orderFlow = new Map();
+// ===== Захиалга flow =====
+const orderFlow = new Map(); // senderId -> { step, model, phone }
 
 function dayKey(d = new Date()) {
   const y = d.getFullYear();
@@ -33,7 +43,9 @@ function normalizePhone(text) {
   return null;
 }
 
+// =========================
 // VERIFY
+// =========================
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -45,7 +57,9 @@ app.get("/webhook", (req, res) => {
   return res.sendStatus(403);
 });
 
+// =========================
 // WEBHOOK
+// =========================
 app.post("/webhook", async (req, res) => {
   try {
     const entries = req.body.entry || [];
@@ -57,7 +71,10 @@ app.post("/webhook", async (req, res) => {
         const senderId = event?.sender?.id;
         if (!senderId) continue;
 
-        // ✅ echo алгасна (давхар спам үүсгэдэг)
+        // ✅ duplicate event ignore
+        if (isDuplicateAndMark(event)) continue;
+
+        // ✅ bot өөрөө явуулсан echo ignore
         if (event.message?.is_echo) continue;
 
         const today = dayKey();
@@ -69,7 +86,7 @@ app.post("/webhook", async (req, res) => {
           const p = event.postback.payload;
 
           if (p === "GET_STARTED") {
-            // Get Started дархад шууд menu 1 удаа
+            // Get Started дээр menu 1 удаа
             await sendText(
               senderId,
               "Сайн байна уу? BlackBox Garage MN 👋\nТа дараах сонголтуудаас сонгоно уу."
@@ -77,7 +94,7 @@ app.post("/webhook", async (req, res) => {
             await sendMainMenu(senderId);
 
             welcomedDay.set(senderId, today);
-            nudgedDay.delete(senderId); // шинэ өдөрт сануулга дахин 1 удаа боломжтой
+            nudgedDay.delete(senderId);
             continue;
           }
 
@@ -107,6 +124,7 @@ app.post("/webhook", async (req, res) => {
             continue;
           }
 
+          // ORDER = "Хүргэлтээр авах" -> phone -> address
           if (p === "ORDER") {
             const prev = orderFlow.get(senderId);
             const model = prev?.model || null;
@@ -134,8 +152,9 @@ app.post("/webhook", async (req, res) => {
         if (event.message?.text) {
           const textRaw = event.message.text.trim();
 
-          // 1) Order flow: phone
+          // 1) order flow: phone
           const flow = orderFlow.get(senderId);
+
           if (flow?.step === "await_phone") {
             const phone = normalizePhone(textRaw);
             if (!phone) {
@@ -150,25 +169,25 @@ app.post("/webhook", async (req, res) => {
             continue;
           }
 
-          // 2) Order flow: address
+          // 2) order flow: address
           if (flow?.step === "await_address") {
             const address = textRaw;
-            const model = flow.model || "Тодорхойгүй";
+            const model = flow.model ? `${flow.model} загвар` : "Тодорхойгүй";
             const phone = flow.phone || "";
 
             await sendText(
               senderId,
-              `✅ Хүргэлтийн хүсэлт авлаа!\n\n📦 Загвар: ${model} загвар\n📞 Утас: ${phone}\n📍 Хаяг: ${address}`
+              `✅ Хүргэлтийн хүсэлт авлаа!\n\n📦 Загвар: ${model}\n📞 Утас: ${phone}\n📍 Хаяг: ${address}`
             );
-            await sendText(senderId, orderText);
 
+            await sendText(senderId, orderText);
             orderFlow.delete(senderId);
             continue;
           }
 
-          // 3) Normal: өдөрт 1 удаа welcome+menu
-          const lastWelcomeDay = welcomedDay.get(senderId);
-          const canShowMenu = lastWelcomeDay !== today;
+          // 3) normal: өдөрт 1 удаа welcome+menu
+          const lastWelcome = welcomedDay.get(senderId);
+          const canShowMenu = lastWelcome !== today;
 
           if (canShowMenu) {
             await sendText(
@@ -178,21 +197,19 @@ app.post("/webhook", async (req, res) => {
             await sendMainMenu(senderId);
 
             welcomedDay.set(senderId, today);
-            nudgedDay.delete(senderId); // өнөөдөр сануулга дахин 1 удаа боломжтой
+            nudgedDay.delete(senderId);
             continue;
           }
 
-          // ✅ Хамгийн чухал: сануулгыг өдөрт 1 л удаа л явуулна
+          // 4) сануулга өдөрт 1 удаа л (spam биш)
           const lastNudge = nudgedDay.get(senderId);
           const canNudge = lastNudge !== today;
 
           if (canNudge) {
             await sendText(senderId, "Доорх товчнуудаас сонголтоо хийнэ үү ✅");
             nudgedDay.set(senderId, today);
-          } else {
-            // өнөөдөр нэг удаа сануулсан бол цаашид чимээгүй (spam биш)
-            // do nothing
           }
+          // else: silent
 
           continue;
         }
@@ -236,11 +253,11 @@ async function sendMainMenu(id) {
           buttons: [
             { type: "postback", title: "Камерны мэдээлэл", payload: "CAMERA_INFO" },
             { type: "postback", title: "🚚 Хүргэлтээр авах", payload: "ORDER" },
-            { type: "postback", title: "Холбоо барих", payload: "CONTACT" },
-          ],
-        },
-      },
-    },
+            { type: "postback", title: "Холбоо барих", payload: "CONTACT" }
+          ]
+        }
+      }
+    }
   });
 }
 
@@ -256,11 +273,11 @@ async function sendCameraMenu(id) {
           buttons: [
             { type: "postback", title: "A загвар", payload: "MODEL_A" },
             { type: "postback", title: "B загвар", payload: "MODEL_B" },
-            { type: "postback", title: "C загвар", payload: "MODEL_C" },
-          ],
-        },
-      },
-    },
+            { type: "postback", title: "C загвар", payload: "MODEL_C" }
+          ]
+        }
+      }
+    }
   });
 }
 
@@ -275,11 +292,11 @@ async function orderButton(id) {
           text: "Хүргэлтээр авах уу?",
           buttons: [
             { type: "postback", title: "🚚 Хүргэлтээр авах", payload: "ORDER" },
-            { type: "postback", title: "📞 Холбоо барих", payload: "CONTACT" },
-          ],
-        },
-      },
-    },
+            { type: "postback", title: "📞 Холбоо барих", payload: "CONTACT" }
+          ]
+        }
+      }
+    }
   });
 }
 
@@ -296,7 +313,7 @@ const orderText = `🚚 Хүргэлт 24 цагийн дотор очно.
 
 ✔️ С камер зөвхөн тамхины залгуурт залгана.
 
-💰 Хэрэв 2-р хувилбараар хийлгэх бол 30,000₮ дуудлагын хөлс нэмэгдэнэ.
+💰 Хэрэв 2-р хувилбараар (гал хамгаалагчид) хийлгэх бол 50,000₮ дуудлагын хөлс нэмэгдэнэ.
 
 🏦 Данс: Хаан Bank — IBAN: 73000500 5876396044`;
 
@@ -306,7 +323,7 @@ ${giftText}
 
 ✔️ Бүх хэл дээрх програмуудыг дэмждэг
 ✔️ 4K 3840x2160P урд камер
-✔️ WiFi + GPS
+✔️ Wi-Fi + GPS
 ✔️ G sensor + зогсоолын хяналт
 ✔️ OLED дэлгэц
 ✔️ Novatek 96670 процессор`;
@@ -320,7 +337,7 @@ ${giftText}
 ✔️ G sensor
 ✔️ Давталт бичлэг
 ✔️ 24 цагийн зогсоолын хяналт
-✔️ WiFi`;
+✔️ Wi-Fi`;
 
 const modelCText = `📷 C загвар камер
 💰 Үнэ: 100,000₮
@@ -328,8 +345,8 @@ ${giftText}
 
 ✔️ 1080P
 ✔️ G sensor
-✔️ WiFi
-✔️ Гар утасны апп
+✔️ 24 цагийн хяналт
+✔️ Wi-Fi + гар утасны апп
 ✔️ 120° харагдац`;
 
 // START
